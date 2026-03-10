@@ -1,0 +1,19 @@
+[project]
+name = "apple-fm-thai"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "coremltools==8.3.0",
+    "datasets>=4.6.1",
+    "huggingface-hub>=1.6.0",
+    "jsonlines>=4.0.0",
+    "langdetect>=1.0.9",
+    "pydantic>=2.12.5",
+    "rich>=14.3.3",
+    "sentencepiece>=0.2.1",
+    "tamm~=0.1.0",
+    "torch>=2.6",
+    "tqdm>=4.67.3",
+]
