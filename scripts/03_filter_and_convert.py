@@ -1,22 +1,30 @@
 """Filter Typhoon dataset and convert to Apple Foundation Model JSONL format.
 
 Apple expects each JSONL line to be:
-  [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+  [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+  (system is optional, must be first if present)
 
 Conversion rules:
-  - Drop system messages (prepend to first user message if Thai-relevant)
+  - Keep system message at position 0 (Apple supports it)
+  - Drop mid-conversation system messages
   - Drop rows with tool_calls
   - Ensure alternating user/assistant pattern
-  - Filter: must contain Thai, Thai ratio > 5%, estimated tokens < 3500
+  - Thai tier: must contain Thai, Thai ratio > 5%, estimated tokens < 3500
+  - English tier: skip Thai rows, estimated tokens < 3500
   - Deduplicate by hashing first user message
   - 80/20 train/eval split
+
+Dataset composition (60% Thai / 40% English):
+  - autoif: 40% — Thai alignment
+  - sovereign: 20% — Thai domain/legal
+  - tulu_sft_en: 40% — English general (prevents catastrophic forgetting)
 """
 
 import hashlib
 import json
 import re
 import random
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 from datasets import load_from_disk
@@ -32,12 +40,12 @@ OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data" / "processed" / "it
 
 THAI_RE = re.compile(r"[\u0E00-\u0E7F]")
 
-# --- Target dataset composition ---
+# --- Target dataset composition (60% Thai / 40% English) ---
 TARGET_SIZE = 4000
 SOURCE_TARGETS = {
-    "autoif": 0.60,          # Tier 1: Thai alignment (was "typhoon_autoif" in plan)
-    "sovereign": 0.20,       # Tier 1b: Thai domain/legal
-    "tulu_sft": 0.20,        # Tier 2: bilingual — ai2-adapt-dev/* and other Tulu sources
+    "autoif": 0.40,        # ~1,600 Thai alignment
+    "sovereign": 0.20,     # ~800 Thai domain/legal
+    "tulu_sft_en": 0.40,   # ~1,600 English general (no Thai filter)
 }
 
 
@@ -63,7 +71,6 @@ def estimate_tokens(text: str) -> int:
 def conversation_text(messages) -> str:
     """Extract text from messages, handling JSON strings, dicts, and string elements."""
     if isinstance(messages, str):
-        # Try parsing as JSON first
         try:
             parsed = json.loads(messages)
             if isinstance(parsed, list):
@@ -101,7 +108,8 @@ def normalize_messages(raw_messages) -> list[dict] | None:
     """Convert Typhoon OpenAI chat format to Apple format.
 
     Returns None if the conversation can't be normalized.
-    Handles messages as JSON strings, list of dicts, or list of strings.
+    Keeps system message at position 0 (Apple supports it).
+    Drops mid-conversation system messages.
     """
     messages = parse_messages(raw_messages)
     if not messages:
@@ -111,7 +119,6 @@ def normalize_messages(raw_messages) -> list[dict] | None:
     if messages and isinstance(messages[0], str):
         return None
 
-    system_content = None
     normalized: list[dict] = []
 
     for msg in messages:
@@ -127,38 +134,41 @@ def normalize_messages(raw_messages) -> list[dict] | None:
             continue
 
         if role == "system":
+            # Keep system message only at position 0
             if not normalized:
-                system_content = content
-            # Skip mid-conversation system messages
+                normalized.append({"role": "system", "content": content})
+            # Drop mid-conversation system messages
             continue
 
         if role == "user":
-            # Prepend system content to first user message
-            if system_content and not normalized:
-                content = f"{system_content}\n\n{content}"
-                system_content = None
             normalized.append({"role": "user", "content": content})
-
         elif role == "assistant":
             normalized.append({"role": "assistant", "content": content})
 
     if not normalized or len(normalized) < 2:
         return None
 
-    # Must start with user, end with assistant
-    if normalized[0]["role"] != "user" or normalized[-1]["role"] != "assistant":
+    # Find first non-system message index
+    first_turn = 0
+    if normalized[0]["role"] == "system":
+        if len(normalized) < 3:  # Need system + user + assistant minimum
+            return None
+        first_turn = 1
+
+    # Must start with user (after optional system), end with assistant
+    if normalized[first_turn]["role"] != "user" or normalized[-1]["role"] != "assistant":
         return None
 
-    # Verify alternating pattern
-    for i in range(len(normalized) - 1):
+    # Verify alternating user/assistant pattern (after optional system)
+    for i in range(first_turn, len(normalized) - 1):
         if normalized[i]["role"] == normalized[i + 1]["role"]:
             return None
 
     return normalized
 
 
-def is_valid(messages: list[dict], max_tokens: int = 3500) -> tuple[bool, str]:
-    """Validate a normalized message list."""
+def is_valid_thai(messages: list[dict], max_tokens: int = 2000) -> tuple[bool, str]:
+    """Validate a normalized message list for Thai tier."""
     full_text = conversation_text(messages)
 
     if not contains_thai(full_text):
@@ -170,7 +180,24 @@ def is_valid(messages: list[dict], max_tokens: int = 3500) -> tuple[bool, str]:
     if estimate_tokens(full_text) > max_tokens:
         return False, "too_long"
 
-    # Check individual messages aren't empty
+    for msg in messages:
+        if len(msg["content"].strip()) < 5:
+            return False, "empty_message"
+
+    return True, "ok"
+
+
+def is_valid_english(messages: list[dict], max_tokens: int = 2000) -> tuple[bool, str]:
+    """Validate a normalized message list for English tier."""
+    full_text = conversation_text(messages)
+
+    # Skip rows that contain Thai (we want pure English for this tier)
+    if contains_thai(full_text):
+        return False, "has_thai"
+
+    if estimate_tokens(full_text) > max_tokens:
+        return False, "too_long"
+
     for msg in messages:
         if len(msg["content"].strip()) < 5:
             return False, "empty_message"
@@ -182,13 +209,18 @@ def process_source(
     rows: list[dict],
     source_name: str,
     target_count: int,
-    require_thai_filter: bool = False,
+    validator: str = "thai",
 ) -> list[dict]:
-    """Process rows from a single source, returning converted samples."""
+    """Process rows from a single source, returning converted samples.
+
+    validator: "thai" for Thai tier, "english" for English tier
+    """
     collected = []
     stats: dict[str, int] = Counter()
 
     random.shuffle(rows)
+
+    validate_fn = is_valid_thai if validator == "thai" else is_valid_english
 
     for row in tqdm(rows, desc=source_name, leave=False):
         if len(collected) >= target_count:
@@ -196,19 +228,12 @@ def process_source(
 
         messages = row.get("messages", [])
 
-        # For tulu_3_sft: pre-filter to only Thai-containing rows
-        if require_thai_filter:
-            full_text = conversation_text(messages)
-            if not contains_thai(full_text):
-                stats["skipped_no_thai"] += 1
-                continue
-
         normalized = normalize_messages(messages)
         if normalized is None:
             stats["normalize_failed"] += 1
             continue
 
-        valid, reason = is_valid(normalized)
+        valid, reason = validate_fn(normalized)
         if not valid:
             stats[f"invalid_{reason}"] += 1
             continue
@@ -258,8 +283,8 @@ def main() -> None:
     # --- Tier 1: autoif (Thai alignment) ---
     autoif_target = int(TARGET_SIZE * SOURCE_TARGETS["autoif"])
     autoif_rows = [r for r in ds_sft if (r.get("source") or "") == "autoif"]
-    console.print(f"\n[bold]Tier 1: autoif ({len(autoif_rows):,} available)[/]")
-    all_collected.extend(process_source(autoif_rows, "autoif", autoif_target))
+    console.print(f"\n[bold]Tier 1: autoif ({len(autoif_rows):,} available, target {autoif_target:,})[/]")
+    all_collected.extend(process_source(autoif_rows, "autoif", autoif_target, validator="thai"))
 
     # --- Tier 1b: Sovereign (loaded from individual split files) ---
     sovereign_target = int(TARGET_SIZE * SOURCE_TARGETS["sovereign"])
@@ -282,16 +307,15 @@ def main() -> None:
             if "prompt" in row and row["prompt"]:
                 sovereign_rows.append({"messages": row["prompt"]})
         console.print(f"  Loaded {len(ds_mirage):,} rows from mirage (prompt→messages)")
-    console.print(f"\n[bold]Tier 1b: sovereign ({len(sovereign_rows):,} available)[/]")
-    all_collected.extend(process_source(sovereign_rows, "sovereign", sovereign_target))
+    console.print(f"\n[bold]Tier 1b: sovereign ({len(sovereign_rows):,} available, target {sovereign_target:,})[/]")
+    all_collected.extend(process_source(sovereign_rows, "sovereign", sovereign_target, validator="thai"))
 
-    # --- Tier 2: Tulu/general SFT (Thai-containing only) ---
-    # Prioritize sources most likely to contain Thai: aya_100k, wildchat_100k, flan
-    tulu_target = TARGET_SIZE - len(all_collected)
+    # --- Tier 2: English general (from tulu SFT, excluding autoif, NO Thai) ---
+    tulu_en_target = int(TARGET_SIZE * SOURCE_TARGETS["tulu_sft_en"])
     tulu_rows = [r for r in ds_sft if (r.get("source") or "") != "autoif"]
-    console.print(f"\n[bold]Tier 2: Tulu SFT Thai-filtered ({len(tulu_rows):,} available, need {tulu_target:,})[/]")
+    console.print(f"\n[bold]Tier 2: English general ({len(tulu_rows):,} available, target {tulu_en_target:,})[/]")
     all_collected.extend(
-        process_source(tulu_rows, "tulu_sft", tulu_target, require_thai_filter=True)
+        process_source(tulu_rows, "tulu_sft_en", tulu_en_target, validator="english")
     )
 
     # --- Deduplicate ---
@@ -330,6 +354,11 @@ def main() -> None:
     for src, count in source_dist.most_common():
         table2.add_row(src, f"{count:,}", f"{100 * count / len(all_collected):.1f}%")
     console.print(table2)
+
+    # Language distribution
+    thai_count = sum(1 for s in all_collected if s["source"] != "tulu_sft_en")
+    en_count = sum(1 for s in all_collected if s["source"] == "tulu_sft_en")
+    console.print(f"\n[bold]Language split:[/] Thai {thai_count:,} ({100*thai_count/len(all_collected):.0f}%) / English {en_count:,} ({100*en_count/len(all_collected):.0f}%)")
 
     console.print("\n[bold green]Done! Ready for training.[/]")
 

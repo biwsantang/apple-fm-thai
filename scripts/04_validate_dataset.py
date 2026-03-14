@@ -3,11 +3,11 @@
 Checks:
   - Valid JSON on each line
   - Each line is a list of message dicts with role + content
-  - Roles are only "user" or "assistant"
-  - Alternating user/assistant pattern
-  - Starts with user, ends with assistant
+  - Roles are "system" (optional, position 0 only), "user", or "assistant"
+  - Alternating user/assistant pattern (after optional system)
+  - Starts with user (or system then user), ends with assistant
   - No empty content
-  - Thai content present
+  - Reports Thai vs English distribution
 """
 
 import json
@@ -24,11 +24,13 @@ THAI_RE = re.compile(r"[\u0E00-\u0E7F]")
 DEFAULT_DIR = Path(__file__).resolve().parent.parent / "data" / "processed" / "iteration_1"
 
 
-def validate_file(path: Path) -> tuple[int, int, list[str]]:
-    """Validate a JSONL file. Returns (valid_count, error_count, error_messages)."""
+def validate_file(path: Path) -> tuple[int, int, list[str], int, int]:
+    """Validate a JSONL file. Returns (valid_count, error_count, error_messages, thai_count, total_turns)."""
     valid = 0
     errors: list[str] = []
     thai_count = 0
+    english_count = 0
+    system_count = 0
     total_turns = 0
 
     with open(path, encoding="utf-8") as f:
@@ -67,8 +69,14 @@ def validate_file(path: Path) -> tuple[int, int, list[str]]:
                     line_ok = False
                     break
 
-                if msg["role"] not in ("user", "assistant"):
+                if msg["role"] not in ("system", "user", "assistant"):
                     errors.append(f"Line {i}, msg {j}: Invalid role '{msg['role']}'")
+                    line_ok = False
+                    break
+
+                # System role only allowed at position 0
+                if msg["role"] == "system" and j != 0:
+                    errors.append(f"Line {i}, msg {j}: System role only allowed at position 0")
                     line_ok = False
                     break
 
@@ -80,17 +88,27 @@ def validate_file(path: Path) -> tuple[int, int, list[str]]:
             if not line_ok:
                 continue
 
-            # Must start with user, end with assistant
-            if messages[0]["role"] != "user":
-                errors.append(f"Line {i}: Doesn't start with 'user'")
+            # Determine first turn index (skip system if present)
+            first_turn = 1 if messages[0]["role"] == "system" else 0
+
+            if messages[0]["role"] == "system":
+                # Need at least system + user + assistant = 3
+                if len(messages) < 3:
+                    errors.append(f"Line {i}: System + too few turns ({len(messages)})")
+                    continue
+                system_count += 1
+
+            # Must start with user (after optional system), end with assistant
+            if messages[first_turn]["role"] != "user":
+                errors.append(f"Line {i}: First turn (idx {first_turn}) is not 'user'")
                 continue
             if messages[-1]["role"] != "assistant":
                 errors.append(f"Line {i}: Doesn't end with 'assistant'")
                 continue
 
-            # Alternating pattern
+            # Alternating user/assistant pattern (after optional system)
             alternating = True
-            for j in range(len(messages) - 1):
+            for j in range(first_turn, len(messages) - 1):
                 if messages[j]["role"] == messages[j + 1]["role"]:
                     errors.append(f"Line {i}: Non-alternating at position {j}")
                     alternating = False
@@ -102,11 +120,13 @@ def validate_file(path: Path) -> tuple[int, int, list[str]]:
             full_text = " ".join(m["content"] for m in messages)
             if THAI_RE.search(full_text):
                 thai_count += 1
+            else:
+                english_count += 1
 
             total_turns += len(messages)
             valid += 1
 
-    return valid, len(errors), errors, thai_count, total_turns
+    return valid, len(errors), errors, thai_count, total_turns, english_count, system_count
 
 
 def main() -> None:
@@ -121,7 +141,7 @@ def main() -> None:
 
     for path in files:
         console.print(f"\n[bold]Validating {path.name}...[/]")
-        valid, error_count, errors, thai_count, total_turns = validate_file(path)
+        valid, error_count, errors, thai_count, total_turns, english_count, system_count = validate_file(path)
 
         table = Table()
         table.add_column("Metric", style="cyan")
@@ -129,6 +149,8 @@ def main() -> None:
         table.add_row("Valid rows", f"{valid:,}")
         table.add_row("Errors", f"{error_count:,}")
         table.add_row("Thai-containing", f"{thai_count:,} ({100 * thai_count / valid:.1f}%)" if valid else "N/A")
+        table.add_row("English-only", f"{english_count:,} ({100 * english_count / valid:.1f}%)" if valid else "N/A")
+        table.add_row("With system msg", f"{system_count:,} ({100 * system_count / valid:.1f}%)" if valid else "N/A")
         table.add_row("Avg turns/conversation", f"{total_turns / valid:.1f}" if valid else "N/A")
         console.print(table)
 
