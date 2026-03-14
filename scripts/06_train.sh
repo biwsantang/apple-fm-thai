@@ -41,7 +41,7 @@ python -m examples.train_adapter \
     --batch-size 4 \
     --gradient-accumulation-steps 4 \
     --pack-sequences \
-    --max-sequence-length 4096 \
+    --max-sequence-length 4095 \
     --activation-checkpointing \
     --precision bf16-mixed \
     --checkpoint-frequency 1 \
