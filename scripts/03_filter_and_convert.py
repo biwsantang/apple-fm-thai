@@ -1,11 +1,10 @@
 """Filter Typhoon dataset and convert to Apple Foundation Model JSONL format.
 
 Apple expects each JSONL line to be:
-  [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
-  (system is optional, must be first if present)
+  [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
 
 Conversion rules:
-  - Keep system message at position 0 (Apple supports it)
+  - Merge system message into first user message (toolkit auto-prepends its own)
   - Drop mid-conversation system messages
   - Drop rows with tool_calls
   - Ensure alternating user/assistant pattern
@@ -108,7 +107,9 @@ def normalize_messages(raw_messages) -> list[dict] | None:
     """Convert Typhoon OpenAI chat format to Apple format.
 
     Returns None if the conversation can't be normalized.
-    Keeps system message at position 0 (Apple supports it).
+    Merges system content into first user message because Apple's toolkit
+    preprocessor auto-prepends its own system message (prepend_system_message=True)
+    and crashes if the data already contains one.
     Drops mid-conversation system messages.
     """
     messages = parse_messages(raw_messages)
@@ -119,6 +120,7 @@ def normalize_messages(raw_messages) -> list[dict] | None:
     if messages and isinstance(messages[0], str):
         return None
 
+    system_content = None
     normalized: list[dict] = []
 
     for msg in messages:
@@ -134,13 +136,16 @@ def normalize_messages(raw_messages) -> list[dict] | None:
             continue
 
         if role == "system":
-            # Keep system message only at position 0
             if not normalized:
-                normalized.append({"role": "system", "content": content})
+                system_content = content
             # Drop mid-conversation system messages
             continue
 
         if role == "user":
+            # Merge system content into first user message
+            if system_content and not normalized:
+                content = f"{system_content}\n\n{content}"
+                system_content = None
             normalized.append({"role": "user", "content": content})
         elif role == "assistant":
             normalized.append({"role": "assistant", "content": content})
@@ -148,19 +153,12 @@ def normalize_messages(raw_messages) -> list[dict] | None:
     if not normalized or len(normalized) < 2:
         return None
 
-    # Find first non-system message index
-    first_turn = 0
-    if normalized[0]["role"] == "system":
-        if len(normalized) < 3:  # Need system + user + assistant minimum
-            return None
-        first_turn = 1
-
-    # Must start with user (after optional system), end with assistant
-    if normalized[first_turn]["role"] != "user" or normalized[-1]["role"] != "assistant":
+    # Must start with user, end with assistant
+    if normalized[0]["role"] != "user" or normalized[-1]["role"] != "assistant":
         return None
 
-    # Verify alternating user/assistant pattern (after optional system)
-    for i in range(first_turn, len(normalized) - 1):
+    # Verify alternating user/assistant pattern
+    for i in range(len(normalized) - 1):
         if normalized[i]["role"] == normalized[i + 1]["role"]:
             return None
 
