@@ -31,23 +31,50 @@ The 60/40 Thai-English mix follows research from Typhoon 2 showing that English 
 | `scripts/03_filter_and_convert.py` | Filter, convert to Apple JSONL, 80/20 split |
 | `scripts/04_validate_dataset.py` | Validate format (roles, alternation, Thai/English) |
 | `scripts/05_validate_tokens.py` | Validate with Apple's real SentencePiece tokenizer |
-| `scripts/06_train.sh` | Launch adapter training |
+| `scripts/06_train.sh` | Launch adapter training (local) |
 | `scripts/07_export.sh` | Export to `.fmadapter` bundle (macOS only) |
 | `scripts/08_generate.py` | Run inference on eval prompts |
+| `modal_train.py` | Cloud GPU training via Modal.com |
 
 ## Quick Start
+
+### Cloud training (recommended)
+
+Train on Modal.com with free $30/month credits (~15 runs on A100).
+
+```bash
+# One-time setup
+pip install modal
+modal setup
+modal volume create apple-fm-toolkit
+modal volume put apple-fm-toolkit /path/to/apple-fm-toolkit/ /toolkit/
+
+# Train (~15-30 min on H100, ~$2/run covered by free credits)
+modal run modal_train.py                    # H100, 3 epochs
+modal run modal_train.py --epochs 1         # quick test
+modal run modal_train.py --gpu a100         # cheaper ($1.25/run)
+
+# Download checkpoints
+modal volume get apple-fm-toolkit /checkpoints/ ./adapter/
+
+# Export (macOS only)
+./scripts/07_export.sh
+```
+
+### Local training
 
 ```bash
 # Setup
 uv sync
+
+# Download Apple toolkit: https://developer.apple.com/apple-intelligence/foundation-models-adapter/
 
 # Download and process data
 uv run python scripts/01_download_dataset.py
 uv run python scripts/03_filter_and_convert.py
 uv run python scripts/05_validate_tokens.py --filter
 
-# Train (requires GPU with 24GB+ VRAM or Mac with 32GB+ RAM)
-# Download Apple toolkit first: https://developer.apple.com/apple-intelligence/foundation-models-adapter/
+# Train (requires GPU with 24GB+ VRAM or Mac with 64GB+ RAM)
 ./scripts/06_train.sh
 
 # Export (macOS only)
@@ -74,8 +101,8 @@ uv run python scripts/08_generate.py --no-adapter  # baseline comparison
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) for dependency management
 - [Apple Adapter Training Toolkit](https://developer.apple.com/apple-intelligence/foundation-models-adapter/) (requires Apple Developer Program)
-- GPU with 24GB+ VRAM for training, or Mac with 32GB+ Apple Silicon
-- macOS for export step (`coremltools` requirement)
+- **Training:** [Modal.com](https://modal.com) account (free tier), or GPU with 24GB+ VRAM, or Mac with 64GB+ Apple Silicon
+- **Export:** macOS (`coremltools` requirement)
 
 ## Notes
 
