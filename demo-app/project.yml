@@ -4,12 +4,13 @@ options:
   deploymentTarget:
     iOS: "26.0"
     macOS: "26.0"
+    visionOS: "26.0"
 settings:
   SWIFT_VERSION: "6.0"
 targets:
   FMThaiDemo:
     type: application
-    platform: [iOS, macOS]
+    platform: [iOS, macOS, visionOS]
     sources:
       - FMThaiDemo
     settings:
