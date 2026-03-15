@@ -40,25 +40,30 @@ The 60/40 Thai-English mix follows research from Typhoon 2 showing that English 
 
 ### Cloud training (recommended)
 
-Train on Modal.com with free $30/month credits (~15 runs on A100).
+Train on Modal.com with free $30/month credits. Uses A100 80GB with Flash Attention, TF32, and torch.compile.
 
 ```bash
 # One-time setup
 pip install modal
 modal setup
 modal volume create apple-fm-toolkit
+modal volume create apple-fm-thai
 modal volume put apple-fm-toolkit /path/to/apple-fm-toolkit/ /toolkit/
 
-# Train (~15-30 min on H100, ~$2/run covered by free credits)
-modal run modal_train.py                    # H100, 3 epochs
+# Upload processed data (keyed by commit hash)
+HASH=$(git rev-parse --short HEAD)
+modal volume put apple-fm-thai /path/to/data/processed/iteration_1/ /data/$HASH/
+
+# Train (~15-30 min on A100 80GB, ~$1.25/run covered by free credits)
+modal run modal_train.py                    # 3 epochs, auto-detects commit hash
 modal run modal_train.py --epochs 1         # quick test
-modal run modal_train.py --gpu a100         # cheaper ($1.25/run)
+modal run modal_train.py --run-id abc1234   # specific data version
 
 # Download checkpoints
-modal volume get apple-fm-toolkit /checkpoints/ ./adapter/
+modal volume get apple-fm-thai /checkpoints/$HASH/ ./adapter/$HASH/
 
 # Export (macOS only)
-./scripts/07_export.sh
+./scripts/07_export.sh ./adapter/$HASH/adapter-final.pt
 ```
 
 ### Local training
@@ -74,7 +79,7 @@ uv run python scripts/01_download_dataset.py
 uv run python scripts/03_filter_and_convert.py
 uv run python scripts/05_validate_tokens.py --filter
 
-# Train (requires GPU with 24GB+ VRAM or Mac with 64GB+ RAM)
+# Train (Mac with 64GB+ Apple Silicon, or Linux GPU with 24GB+ VRAM)
 ./scripts/06_train.sh
 
 # Export (macOS only)
@@ -93,8 +98,26 @@ uv run python scripts/08_generate.py --no-adapter  # baseline comparison
 | Learning rate | 1e-3 | Apple toolkit default |
 | Effective batch | 16 | batch=4 x accumulation=4 |
 | Sequence packing | Enabled | Mean 481 tokens vs 4096 max context |
-| Precision | bf16-mixed | Default, good speed/accuracy balance |
+| Precision | bf16-mixed (CUDA) / f16-mixed (MPS) | Auto-detected per platform |
 | LoRA rank | 32 | Fixed by Apple (alpha=16) |
+
+### Cloud optimizations (Modal)
+
+| Optimization | Effect |
+|---|---|
+| Flash Attention 2 | ~1.5-2x faster attention, O(N) memory |
+| TF32 matmul | ~3x faster matmul on A100 |
+| cuDNN benchmark | Auto-tuned CUDA kernels |
+| torch.compile | 10-30% speedup via graph optimization |
+
+### Local Mac optimizations (MPS)
+
+| Optimization | Effect |
+|---|---|
+| f16-mixed precision | MPS doesn't support bf16 |
+| MPS fallback | Unsupported ops fall back to CPU |
+| MPS fast math | Faster Metal kernels |
+| Activation checkpointing | Fits 3B model in 32GB |
 
 ## Requirements
 
