@@ -77,8 +77,8 @@ def train(
     run_id: str,
     epochs: int = 3,
     learning_rate: float = 1e-3,
-    batch_size: int = 4,
-    gradient_accumulation_steps: int = 4,
+    batch_size: int = 2,
+    gradient_accumulation_steps: int = 8,
 ):
     import os
     import torch
@@ -87,6 +87,9 @@ def train(
     torch.backends.cudnn.benchmark = True          # auto-tune CUDA kernels
     torch.backends.cuda.matmul.allow_tf32 = True   # ~3x faster matmul on A100
     torch.backends.cudnn.allow_tf32 = True         # TF32 for cuDNN ops
+
+    # Reduce memory fragmentation
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     # Locate toolkit (shared) and data (per run)
     toolkit_dir = f"{TOOLKIT_MOUNT}/toolkit"
@@ -158,8 +161,8 @@ def main(
     run_id: str = "",
     epochs: int = 3,
     learning_rate: float = 1e-3,
-    batch_size: int = 4,
-    gradient_accumulation_steps: int = 4,
+    batch_size: int = 2,
+    gradient_accumulation_steps: int = 8,
 ):
     if not run_id:
         run_id = get_commit_hash()
