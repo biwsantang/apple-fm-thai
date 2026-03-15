@@ -30,11 +30,18 @@ fi
 export PYTHONPATH="${TOOLKIT_DIR}:${PYTHONPATH:-}"
 export PYTHONHASHSEED=42
 
-# Auto-detect precision: MPS (Mac) doesn't support bf16, use f16-mixed instead
+# Auto-detect platform and set optimizations
 if [[ "$(uname)" == "Darwin" ]]; then
     PRECISION="f16-mixed"
+    # MPS memory: disable hard cap, let OS manage swap
     export PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0
-    echo "Detected macOS — using f16-mixed precision (MPS doesn't support bf16)"
+    # MPS fallback: silently run unsupported ops on CPU instead of crashing
+    export PYTORCH_ENABLE_MPS_FALLBACK=1
+    # MPS fast math: trade negligible precision for faster Metal kernels
+    export PYTORCH_MPS_FAST_MATH=1
+    # Optimize CPU thread count for M-series performance cores
+    export OMP_NUM_THREADS=8
+    echo "Detected macOS — f16-mixed, MPS fallback, fast math enabled"
 else
     PRECISION="bf16-mixed"
     echo "Detected Linux — using bf16-mixed precision"
