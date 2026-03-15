@@ -134,7 +134,6 @@ def train(
         "--checkpoint-frequency", "1",
         "--weight-decay", "0.01",
         "--clip-grad-norm", "1.0",
-        "--compile-model",
         "--checkpoint-dir", checkpoint_dir,
     ]
 
