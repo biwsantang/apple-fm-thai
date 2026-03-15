@@ -21,7 +21,6 @@ def main() -> None:
         ds_sft = load_dataset(
             "typhoon-ai/typhoon-s-instruct-post-training",
             split="sft",
-            trust_remote_code=True,
         )
         ds_sft.save_to_disk(str(sft_path))
         console.print(f"[green]Saved {len(ds_sft):,} SFT rows to {sft_path}[/]")
@@ -44,8 +43,7 @@ def main() -> None:
                 ds_split = load_dataset(
                     "typhoon-ai/typhoon-s-sovereign-capability-dataset",
                     split=split_name,
-                    trust_remote_code=True,
-                )
+                        )
                 ds_split.save_to_disk(str(split_path))
                 console.print(f"[green]Saved {len(ds_split):,} rows to {split_path}[/]")
             except Exception as e:
@@ -56,8 +54,7 @@ def main() -> None:
                     "typhoon-ai/typhoon-s-sovereign-capability-dataset",
                     data_files=f"*{split_name}*.parquet",
                     split="train",
-                    trust_remote_code=True,
-                )
+                        )
                 ds_split.save_to_disk(str(split_path))
                 console.print(f"[green]Saved {len(ds_split):,} rows to {split_path}[/]")
 

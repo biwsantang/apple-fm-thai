@@ -24,6 +24,7 @@ toolkit_volume = modal.Volume.from_name("apple-fm-toolkit")
 # Container image with all dependencies
 image = (
     modal.Image.debian_slim(python_version="3.11")
+    .apt_install("git")
     .pip_install(
         "torch>=2.6",
         "tamm~=0.1.0",
@@ -31,7 +32,9 @@ image = (
         "pydantic>=2.12.5",
         "tqdm>=4.67.3",
         "rich>=14.3.3",
-        gpu="h100",
+        "datasets",
+        "huggingface_hub",
+        gpu="a100",
     )
     .run_commands(
         "pip install uv",
@@ -45,7 +48,7 @@ WORK_DIR = "/work"
 
 @app.function(
     image=image,
-    gpu="H100",
+    gpu="A100-80GB",
     volumes={TOOLKIT_MOUNT: toolkit_volume},
     timeout=3600,
 )
@@ -166,7 +169,7 @@ def train(
 @app.local_entrypoint()
 def main(
     epochs: int = 3,
-    gpu: str = "H100",
+    gpu: str = "A100-80GB",
     learning_rate: float = 1e-3,
     batch_size: int = 4,
     gradient_accumulation_steps: int = 4,
