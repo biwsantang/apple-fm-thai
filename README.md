@@ -12,13 +12,13 @@ Apple Intelligence's Foundation Model has limited Thai capability. This project 
 - [`typhoon-ai/typhoon-s-instruct-post-training`](https://huggingface.co/datasets/typhoon-ai/typhoon-s-instruct-post-training) — SFT split (357K rows)
 - [`typhoon-ai/typhoon-s-sovereign-capability-dataset`](https://huggingface.co/datasets/typhoon-ai/typhoon-s-sovereign-capability-dataset) — Thai legal/domain (NitiBench + MIRAGE)
 
-**Final composition (3,972 conversations):**
+**Final composition (~3,990 conversations):**
 
 | Source | Count | % | Language |
 |--------|-------|---|----------|
-| autoif | 1,582 | 40% | Thai |
+| autoif | ~1,596 | 40% | Thai |
 | sovereign | 800 | 20% | Thai |
-| tulu_sft_en | 1,596 | 40% | English |
+| tulu_sft_en | ~1,596 | 40% | English |
 
 The 60/40 Thai-English mix follows research from Typhoon 2 showing that English data prevents catastrophic forgetting during language adaptation.
 
@@ -40,7 +40,7 @@ The 60/40 Thai-English mix follows research from Typhoon 2 showing that English 
 
 ### Cloud training (recommended)
 
-Train on Modal.com with free $30/month credits. Uses A100 80GB with Flash Attention, TF32, and torch.compile.
+Train on Modal.com with free $30/month credits. Uses A100 80GB with TF32 and cuDNN auto-tuning.
 
 ```bash
 # One-time setup
@@ -79,7 +79,7 @@ uv run python scripts/01_download_dataset.py
 uv run python scripts/03_filter_and_convert.py
 uv run python scripts/05_validate_tokens.py --filter
 
-# Train (Mac with 64GB+ Apple Silicon, or Linux GPU with 24GB+ VRAM)
+# Train (Mac with 32GB+ Apple Silicon, or Linux GPU with 80GB+ VRAM)
 ./scripts/06_train.sh
 
 # Export (macOS only)
@@ -96,19 +96,27 @@ uv run python scripts/08_generate.py --no-adapter  # baseline comparison
 |-----------|-------|-----------|
 | Epochs | 3 | Small dataset, avoid overfitting |
 | Learning rate | 1e-3 | Apple toolkit default |
-| Effective batch | 16 | batch=4 x accumulation=4 |
-| Sequence packing | Enabled | Mean 481 tokens vs 4096 max context |
+| Effective batch | 16 | Platform-aware (see below) |
+| Sequence packing | Enabled | Mean 481 tokens vs 4096 max context, ~8x throughput |
 | Precision | bf16-mixed (CUDA) / f16-mixed (MPS) | Auto-detected per platform |
 | LoRA rank | 32 | Fixed by Apple (alpha=16) |
+
+### Platform-specific batch settings
+
+With packing, each batch element is a full 4095-token sequence. The logits tensor (batch x 4095 x 153K vocab) dominates memory — batch=4 OOMs even on A100 80GB.
+
+| Platform | batch_size | accum | effective batch | VRAM used |
+|----------|-----------|-------|-----------------|-----------|
+| Mac (32GB MPS) | 1 | 16 | 16 | ~24 GB |
+| Linux (A100 80GB) | 2 | 8 | 16 | ~50 GB |
 
 ### Cloud optimizations (Modal)
 
 | Optimization | Effect |
 |---|---|
-| Flash Attention 2 | ~1.5-2x faster attention, O(N) memory |
 | TF32 matmul | ~3x faster matmul on A100 |
 | cuDNN benchmark | Auto-tuned CUDA kernels |
-| torch.compile | 10-30% speedup via graph optimization |
+| expandable_segments | Reduces CUDA memory fragmentation |
 
 ### Local Mac optimizations (MPS)
 
@@ -124,7 +132,7 @@ uv run python scripts/08_generate.py --no-adapter  # baseline comparison
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) for dependency management
 - [Apple Adapter Training Toolkit](https://developer.apple.com/apple-intelligence/foundation-models-adapter/) (requires Apple Developer Program)
-- **Training:** [Modal.com](https://modal.com) account (free tier), or GPU with 24GB+ VRAM, or Mac with 64GB+ Apple Silicon
+- **Training:** [Modal.com](https://modal.com) account (free tier), or Mac with 32GB+ Apple Silicon, or Linux GPU with 80GB+ VRAM
 - **Export:** macOS (`coremltools` requirement)
 
 ## Notes
