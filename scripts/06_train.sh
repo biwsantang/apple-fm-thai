@@ -15,7 +15,7 @@
 #   lr=1e-3           Apple toolkit default for this model
 #   batch=4 x accum=4 Effective batch size 16
 #   pack-sequences    Mean 481 tokens vs 4096 max → ~8x throughput
-#   bf16-mixed        Default precision, good speed/accuracy balance
+#   precision         Auto-detected: f16-mixed on Mac (MPS), bf16-mixed on CUDA
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -30,6 +30,16 @@ fi
 export PYTHONPATH="${TOOLKIT_DIR}:${PYTHONPATH:-}"
 export PYTHONHASHSEED=42
 
+# Auto-detect precision: MPS (Mac) doesn't support bf16, use f16-mixed instead
+if [[ "$(uname)" == "Darwin" ]]; then
+    PRECISION="f16-mixed"
+    export PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0
+    echo "Detected macOS — using f16-mixed precision (MPS doesn't support bf16)"
+else
+    PRECISION="bf16-mixed"
+    echo "Detected Linux — using bf16-mixed precision"
+fi
+
 # Allow overriding epochs from CLI (e.g., ./06_train.sh --epochs 1)
 EXTRA_ARGS=("$@")
 
@@ -43,7 +53,7 @@ python -m examples.train_adapter \
     --pack-sequences \
     --max-sequence-length 4095 \
     --activation-checkpointing \
-    --precision bf16-mixed \
+    --precision "$PRECISION" \
     --checkpoint-frequency 1 \
     --weight-decay 0.01 \
     --clip-grad-norm 1.0 \
