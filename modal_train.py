@@ -35,23 +35,18 @@ toolkit_volume = modal.Volume.from_name("apple-fm-toolkit")
 # Experiment: data + checkpoints (keyed by commit hash)
 experiment_volume = modal.Volume.from_name("apple-fm-thai")
 
-# Flash Attention prebuilt wheel (must match torch + CUDA + Python version exactly)
-FLASH_ATTN_WHEEL = (
-    "https://github.com/Dao-AILab/flash-attention/releases/download/"
-    "v2.8.3/flash_attn-2.8.3+cu12torch2.6cxx11abiTRUE-cp311-cp311-linux_x86_64.whl"
-)
-
 # Container image with all dependencies
+# Note: flash-attn wheel removed due to ABI incompatibility with tamm.
+# PyTorch's built-in SDPA provides flash attention on A100 automatically.
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install(
-        "torch>=2.6,<2.7",  # pinned for flash-attn wheel compatibility
+        "torch>=2.6",
         "tamm~=0.1.0",
         "sentencepiece>=0.2.1",
         "pydantic>=2.12.5",
         "tqdm>=4.67.3",
         "rich>=14.3.3",
-        FLASH_ATTN_WHEEL,
         gpu="a100",
     )
 )
