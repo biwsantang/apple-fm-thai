@@ -77,7 +77,10 @@ def train(
     run_id: str,
     epochs: int = 3,
     learning_rate: float = 1e-3,
-    batch_size: int = 2,
+    # Batch size with packing: each element is a FULL 4095-token packed sequence.
+    # Logits tensor: batch × 4095 × 153K vocab. batch=4 OOMs even on A100 80GB.
+    # Keep batch low, use gradient accumulation for effective batch size.
+    batch_size: int = 2,          # effective batch = 2 × 8 = 16
     gradient_accumulation_steps: int = 8,
 ):
     import os

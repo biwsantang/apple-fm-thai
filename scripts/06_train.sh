@@ -8,14 +8,21 @@
 # Requirements:
 #   - Apple FM toolkit at apple-fm-toolkit/
 #   - Processed data at data/processed/iteration_1/
-#   - GPU with 24GB+ VRAM (H100/A100) or Mac with 32GB+ RAM
+#   - Mac with 32GB+ Apple Silicon, or Linux GPU with 24GB+ VRAM
 #
 # Key hyperparameters:
 #   epochs=3          Small dataset (3.2K train), avoid overfitting
 #   lr=1e-3           Apple toolkit default for this model
-#   batch=4 x accum=4 Effective batch size 16
-#   pack-sequences    Mean 481 tokens vs 4096 max → ~8x throughput
 #   precision         Auto-detected: f16-mixed on Mac (MPS), bf16-mixed on CUDA
+#
+# Batch size notes:
+#   With --pack-sequences, each batch element is a FULL 4095-token packed
+#   sequence (not a single ~481-token conversation). This means batch_size
+#   has ~8x more memory impact than without packing.
+#   - Logits tensor per step: batch × 4095 × 153,600 vocab
+#   - batch=4 OOMs even on A100 80GB (~9.4 GB logits alone)
+#   - Rule: keep batch_size=1-2 with packing, use gradient_accumulation
+#     to reach target effective batch size (e.g., batch=1 × accum=16 = 16)
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,6 +40,8 @@ export PYTHONHASHSEED=42
 # Auto-detect platform and set optimizations
 if [[ "$(uname)" == "Darwin" ]]; then
     PRECISION="f16-mixed"
+    BATCH_SIZE=1
+    GRAD_ACCUM=16
     # MPS memory: disable hard cap, let OS manage swap
     export PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0
     # MPS fallback: silently run unsupported ops on CPU instead of crashing
@@ -41,10 +50,14 @@ if [[ "$(uname)" == "Darwin" ]]; then
     export PYTORCH_MPS_FAST_MATH=1
     # Optimize CPU thread count for M-series performance cores
     export OMP_NUM_THREADS=8
-    echo "Detected macOS — f16-mixed, MPS fallback, fast math enabled"
+    echo "Detected macOS — f16-mixed, batch=$BATCH_SIZE, accum=$GRAD_ACCUM"
 else
     PRECISION="bf16-mixed"
-    echo "Detected Linux — using bf16-mixed precision"
+    BATCH_SIZE=2
+    GRAD_ACCUM=8
+    # Reduce CUDA memory fragmentation
+    export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+    echo "Detected Linux — bf16-mixed, batch=$BATCH_SIZE, accum=$GRAD_ACCUM"
 fi
 
 # Allow overriding epochs from CLI (e.g., ./06_train.sh --epochs 1)
@@ -55,8 +68,8 @@ python -m examples.train_adapter \
     --eval-data "$PROJECT_DIR/data/processed/iteration_1/eval.jsonl" \
     --epochs 3 \
     --learning-rate 1e-3 \
-    --batch-size 4 \
-    --gradient-accumulation-steps 4 \
+    --batch-size "$BATCH_SIZE" \
+    --gradient-accumulation-steps "$GRAD_ACCUM" \
     --pack-sequences \
     --max-sequence-length 4095 \
     --activation-checkpointing \
