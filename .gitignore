@@ -21,3 +21,9 @@ adapter/
 
 # Eval results (generated, not source)
 eval/results.jsonl
+
+# Xcode
+demo-app/FMThaiDemo.xcodeproj/
+demo-app/FMThaiDemo.xcodeproj/xcuserdata/
+*.xcuserstate
+DerivedData/
