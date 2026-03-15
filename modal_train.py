@@ -6,29 +6,33 @@ Setup (one-time):
     modal volume create apple-fm-toolkit
     modal volume create apple-fm-thai
     modal volume put apple-fm-toolkit /path/to/apple-fm-toolkit/ /toolkit/
-    modal volume put apple-fm-thai /path/to/data/processed/iteration_1/ /data/iteration_1/
 
-Run training:
+Upload data (per iteration, named by commit hash):
+    HASH=$(git rev-parse --short HEAD)
+    modal volume put apple-fm-thai /path/to/data/processed/iteration_1/ /data/$HASH/
+
+Run training (auto-detects current commit hash):
     modal run modal_train.py
-    modal run modal_train.py --epochs 1         # quick test
-    modal run modal_train.py --iteration 2      # different dataset variant
+    modal run modal_train.py --epochs 1              # quick test
+    modal run modal_train.py --run-id abc1234        # specific commit hash
 
 Download checkpoints:
-    modal volume get apple-fm-thai /checkpoints/iteration_1/ ./adapter/iteration_1/
+    modal volume get apple-fm-thai /checkpoints/$HASH/ ./adapter/$HASH/
 
 Volumes:
     apple-fm-toolkit  — shared base model + tokenizer (~12GB, reuse across experiments)
-    apple-fm-thai     — experiment data + checkpoints (per iteration)
+    apple-fm-thai     — experiment data + checkpoints (keyed by commit hash)
 """
 
 import modal
+import subprocess
 
 app = modal.App("apple-fm-thai")
 
 # Shared: base model + tokenizer (reuse across all experiments)
 toolkit_volume = modal.Volume.from_name("apple-fm-toolkit")
 
-# Experiment: data + checkpoints (per iteration/variant)
+# Experiment: data + checkpoints (keyed by commit hash)
 experiment_volume = modal.Volume.from_name("apple-fm-thai")
 
 # Container image with all dependencies
@@ -49,6 +53,15 @@ TOOLKIT_MOUNT = "/toolkit"
 EXPERIMENT_MOUNT = "/experiment"
 
 
+def get_commit_hash() -> str:
+    """Get short commit hash from local git repo."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        capture_output=True, text=True,
+    )
+    return result.stdout.strip()
+
+
 @app.function(
     image=image,
     gpu="A100-80GB",
@@ -59,28 +72,27 @@ EXPERIMENT_MOUNT = "/experiment"
     timeout=3600,
 )
 def train(
-    iteration: int = 1,
+    run_id: str,
     epochs: int = 3,
     learning_rate: float = 1e-3,
     batch_size: int = 4,
     gradient_accumulation_steps: int = 4,
 ):
-    import subprocess
     import os
 
-    # Locate toolkit (shared) and data (per iteration)
+    # Locate toolkit (shared) and data (per run)
     toolkit_dir = f"{TOOLKIT_MOUNT}/toolkit"
-    train_data = f"{EXPERIMENT_MOUNT}/data/iteration_{iteration}/train.jsonl"
-    eval_data = f"{EXPERIMENT_MOUNT}/data/iteration_{iteration}/eval.jsonl"
-    checkpoint_dir = f"{EXPERIMENT_MOUNT}/checkpoints/iteration_{iteration}"
+    train_data = f"{EXPERIMENT_MOUNT}/data/{run_id}/train.jsonl"
+    eval_data = f"{EXPERIMENT_MOUNT}/data/{run_id}/eval.jsonl"
+    checkpoint_dir = f"{EXPERIMENT_MOUNT}/checkpoints/{run_id}"
 
     # Verify assets exist
     assert os.path.exists(os.path.join(toolkit_dir, "assets", "base-model.pt")), \
-        f"Toolkit not found. Upload with: modal volume put apple-fm-toolkit /path/to/apple-fm-toolkit/ /toolkit/"
+        "Toolkit not found. Upload with: modal volume put apple-fm-toolkit /path/to/apple-fm-toolkit/ /toolkit/"
     assert os.path.exists(train_data), \
-        f"Data not found for iteration {iteration}. Upload with: modal volume put apple-fm-thai /path/to/data/ /data/iteration_{iteration}/"
+        f"Data not found for {run_id}. Upload with: modal volume put apple-fm-thai /path/to/data/ /data/{run_id}/"
 
-    print(f"=== Iteration {iteration} ===")
+    print(f"=== Run: {run_id} ===")
     print(f"    Toolkit: {toolkit_dir}")
     print(f"    Train: {train_data}")
     print(f"    Eval: {eval_data}")
@@ -128,22 +140,25 @@ def train(
 
     experiment_volume.commit()
     print(f"\n=== Done! ===")
-    print(f"Download: modal volume get apple-fm-thai /checkpoints/iteration_{iteration}/ ./adapter/iteration_{iteration}/")
+    print(f"Download: modal volume get apple-fm-thai /checkpoints/{run_id}/ ./adapter/{run_id}/")
 
     return "Training complete"
 
 
 @app.local_entrypoint()
 def main(
-    iteration: int = 1,
+    run_id: str = "",
     epochs: int = 3,
     learning_rate: float = 1e-3,
     batch_size: int = 4,
     gradient_accumulation_steps: int = 4,
 ):
-    print(f"Launching iteration {iteration}: epochs={epochs}, lr={learning_rate}, bs={batch_size}")
+    if not run_id:
+        run_id = get_commit_hash()
+
+    print(f"Launching run {run_id}: epochs={epochs}, lr={learning_rate}, bs={batch_size}")
     result = train.remote(
-        iteration=iteration,
+        run_id=run_id,
         epochs=epochs,
         learning_rate=learning_rate,
         batch_size=batch_size,
@@ -151,4 +166,4 @@ def main(
     )
     print(result)
     print(f"\nTo download checkpoints:")
-    print(f"  modal volume get apple-fm-thai /checkpoints/iteration_{iteration}/ ./adapter/iteration_{iteration}/")
+    print(f"  modal volume get apple-fm-thai /checkpoints/{run_id}/ ./adapter/{run_id}/")
