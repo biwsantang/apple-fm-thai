@@ -86,6 +86,12 @@ def train(
     gradient_accumulation_steps: int = 4,
 ):
     import os
+    import torch
+
+    # CUDA optimizations
+    torch.backends.cudnn.benchmark = True          # auto-tune CUDA kernels
+    torch.backends.cuda.matmul.allow_tf32 = True   # ~3x faster matmul on A100
+    torch.backends.cudnn.allow_tf32 = True         # TF32 for cuDNN ops
 
     # Locate toolkit (shared) and data (per run)
     toolkit_dir = f"{TOOLKIT_MOUNT}/toolkit"
@@ -128,6 +134,7 @@ def train(
         "--checkpoint-frequency", "1",
         "--weight-decay", "0.01",
         "--clip-grad-norm", "1.0",
+        "--compile-model",
         "--checkpoint-dir", checkpoint_dir,
     ]
 
